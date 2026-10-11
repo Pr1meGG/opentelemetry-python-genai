@@ -190,7 +190,11 @@ class NonStreamingTestCase(TestCase):
             model="gemini-2.0-flash", contents=("Hello", "world")
         )
         self.assertEqual(response.text, "Yep, it works!")
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
 
     def test_empty_tuple_contents_mimics_sdk_error(self):
         # Even with capture enabled, passing () should fail gracefully like [] does.
@@ -205,7 +209,11 @@ class NonStreamingTestCase(TestCase):
             config=GenerateContentConfig(system_instruction=("Be polite",)),
         )
         self.assertEqual(response.text, "Yep, it works!")
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_SYSTEM_INSTRUCTIONS],
+            '[{"content":"Be polite","type":"text"}]',
+        )
 
     def test_mixed_tuple_contents(self):
         self.configure_valid_response(text="Yep, it works!")
@@ -216,7 +224,11 @@ class NonStreamingTestCase(TestCase):
             contents=("Hello", Part.from_text(text="world")),
         )
         self.assertEqual(response.text, "Yep, it works!")
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
 
     def test_generates_span(self):
         self.configure_valid_response(text="Yep, it works!")

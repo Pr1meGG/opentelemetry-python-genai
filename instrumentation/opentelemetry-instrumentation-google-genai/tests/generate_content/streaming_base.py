@@ -14,6 +14,7 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.google_genai import (
     GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY,
 )
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 
 from .base import TestCase
 
@@ -41,7 +42,11 @@ class StreamingTestCase(TestCase):
         )
         for _ in response:
             pass
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
 
     def test_empty_tuple_contents_mimics_sdk_error(self):
         with self.assertRaises(ValueError):
@@ -60,7 +65,11 @@ class StreamingTestCase(TestCase):
         )
         for _ in response:
             pass
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_SYSTEM_INSTRUCTIONS],
+            '[{"content":"Be polite","type":"text"}]',
+        )
 
     def test_mixed_tuple_contents(self):
         self.configure_valid_response(text="Yep, it works!")
@@ -72,7 +81,11 @@ class StreamingTestCase(TestCase):
         )
         for _ in response:
             pass
-        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
 
     def test_instrumentation_does_not_break_core_functionality(self):
         self.configure_valid_response(text="Yep, it works!")
