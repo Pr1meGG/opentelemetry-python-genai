@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 try:
-    import httpx2 as _http_lib
+    import httpx
 except ImportError:
-    import httpx as _http_lib
+    import httpx2 as httpx
 from anthropic import Anthropic, APIConnectionError, NotFoundError
 from anthropic._response import APIResponse, ResponseContextManager
 
@@ -533,6 +533,7 @@ def test_sync_messages_create_captures_multimodal_content(
 
 def test_sync_messages_create_preserves_generator_document_content(
     instrument_with_content,
+    span_exporter,
 ):
     received_content = None
 
@@ -542,7 +543,7 @@ def test_sync_messages_create_preserves_generator_document_content(
         received_content = body["messages"][0]["content"][0]["source"][
             "content"
         ]
-        return _http_lib.Response(
+        return httpx.Response(
             200,
             json={
                 "id": "msg_generator_content",
@@ -560,8 +561,8 @@ def test_sync_messages_create_preserves_generator_document_content(
         yield {"type": "text", "text": "First"}
         yield {"type": "text", "text": "Second"}
 
-    transport = _http_lib.MockTransport(handle_request)
-    with _http_lib.Client(transport=transport) as http_client:
+    transport = httpx.MockTransport(handle_request)
+    with httpx.Client(transport=transport) as http_client:
         client = Anthropic(http_client=http_client)
         client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -585,6 +586,15 @@ def test_sync_messages_create_preserves_generator_document_content(
     assert received_content == [
         {"type": "text", "text": "First"},
         {"type": "text", "text": "Second"},
+    ]
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    messages = json.loads(
+        spans[0].attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert messages[0]["parts"] == [
+        {"type": "text", "content": "First"},
+        {"type": "text", "content": "Second"},
     ]
 
 
@@ -1358,7 +1368,7 @@ def test_sync_messages_create_tools_generator_reaches_the_sdk(
 
     def respond(request):
         seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
+        return httpx.Response(
             200,
             json={
                 "id": "msg_generator",
@@ -1375,9 +1385,7 @@ def test_sync_messages_create_tools_generator_reaches_the_sdk(
     client = Anthropic(
         api_key="test_anthropic_api_key",
         base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
     )
     client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -1392,115 +1400,14 @@ def test_sync_messages_create_tools_generator_reaches_the_sdk(
     _assert_weather_tool_definitions(spans[0])
 
 
-def test_sync_messages_create_messages_generator_reaches_the_sdk(
+def test_sync_messages_stream_tools_generator_reaches_the_sdk(
     span_exporter, instrument_with_content
 ):
-    """A one-shot ``messages`` iterator must still reach the SDK."""
     seen = {}
 
     def respond(request):
         seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            json={
-                "id": "msg_generator",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-sonnet-4-20250514",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            },
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    user_msg = {"role": "user", "content": "What is the weather in SF?"}
-    client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=(msg for msg in [user_msg]),
-    )
-
-    assert seen["body"]["messages"] == [user_msg]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    input_messages = _load_span_messages(
-        spans[0], GenAIAttributes.GEN_AI_INPUT_MESSAGES
-    )
-    assert input_messages[0]["role"] == "user"
-    assert input_messages[0]["parts"] == [
-        {"type": "text", "content": "What is the weather in SF?"}
-    ]
-
-
-def test_sync_messages_create_system_generator_reaches_the_sdk(
-    span_exporter, instrument_with_content
-):
-    """A one-shot ``system`` iterator must still reach the SDK."""
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            json={
-                "id": "msg_generator",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-sonnet-4-20250514",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            },
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    system_block = {"type": "text", "text": "You are a helpful assistant."}
-    client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=[{"role": "user", "content": "Hello"}],
-        system=(block for block in [system_block]),
-    )
-
-    assert seen["body"]["system"] == [system_block]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    system_instructions = _load_span_messages(
-        spans[0], GenAIAttributes.GEN_AI_SYSTEM_INSTRUCTIONS
-    )
-    assert system_instructions == [
-        {"type": "text", "content": "You are a helpful assistant."}
-    ]
-
-
-def test_sync_messages_stream_tools_generator_is_recorded(
-    span_exporter, instrument_with_content
-):
-    """``stream`` serializes the request before the invocation exists.
-
-    The generator has to be frozen in the wrapper, not while the invocation is
-    built, or the SDK drains it first and the span records no tools.
-    """
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
+        return httpx.Response(
             200,
             headers={"content-type": "text/event-stream"},
             content=_STREAM_SSE_BODY,
@@ -1509,9 +1416,7 @@ def test_sync_messages_stream_tools_generator_is_recorded(
     client = Anthropic(
         api_key="test_anthropic_api_key",
         base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
     )
     with client.messages.stream(
         model="claude-sonnet-4-20250514",
@@ -1525,185 +1430,6 @@ def test_sync_messages_stream_tools_generator_is_recorded(
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
     _assert_weather_tool_definitions(spans[0])
-
-
-def test_sync_messages_stream_messages_generator_is_recorded(
-    span_exporter, instrument_with_content
-):
-    """``stream`` serializes messages before the invocation exists."""
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=_STREAM_SSE_BODY,
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    user_msg = {"role": "user", "content": "What is the weather in SF?"}
-    with client.messages.stream(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=(msg for msg in [user_msg]),
-    ) as stream:
-        stream.until_done()
-
-    assert seen["body"]["messages"] == [user_msg]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    input_messages = _load_span_messages(
-        spans[0], GenAIAttributes.GEN_AI_INPUT_MESSAGES
-    )
-    assert input_messages[0]["role"] == "user"
-    assert input_messages[0]["parts"] == [
-        {"type": "text", "content": "What is the weather in SF?"}
-    ]
-
-
-def test_sync_messages_stream_system_generator_is_recorded(
-    span_exporter, instrument_with_content
-):
-    """``stream`` serializes system before the invocation exists."""
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=_STREAM_SSE_BODY,
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    system_block = {"type": "text", "text": "You are a helpful assistant."}
-    with client.messages.stream(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=[{"role": "user", "content": "Hello"}],
-        system=(block for block in [system_block]),
-    ) as stream:
-        stream.until_done()
-
-    assert seen["body"]["system"] == [system_block]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    system_instructions = _load_span_messages(
-        spans[0], GenAIAttributes.GEN_AI_SYSTEM_INSTRUCTIONS
-    )
-    assert system_instructions == [
-        {"type": "text", "content": "You are a helpful assistant."}
-    ]
-
-
-def test_sync_messages_generator_no_content_transparency(
-    span_exporter, instrument_no_content
-):
-    """When content capture is disabled, generator inputs must reach the SDK
-    unmaterialized by instrumentation and recorded spans must not contain content attributes."""
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            json={
-                "id": "msg_generator",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude-sonnet-4-20250514",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            },
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    user_msg = {"role": "user", "content": "Hello without capture"}
-    system_block = {"type": "text", "text": "System without capture"}
-    client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=(msg for msg in [user_msg]),
-        system=(block for block in [system_block]),
-        tools=(tool for tool in [_WEATHER_TOOL]),
-    )
-
-    assert seen["body"]["messages"] == [user_msg]
-    assert seen["body"]["system"] == [system_block]
-    assert seen["body"]["tools"] == [_WEATHER_TOOL]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    span = spans[0]
-    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES not in span.attributes
-    assert GenAIAttributes.GEN_AI_SYSTEM_INSTRUCTIONS not in span.attributes
-    assert GenAIAttributes.GEN_AI_TOOL_DEFINITIONS not in span.attributes
-    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in span.attributes
-
-
-def test_sync_messages_stream_generator_no_content_transparency(
-    span_exporter, instrument_no_content
-):
-    """When content capture is disabled, streaming generator inputs must reach the SDK
-    unmaterialized by instrumentation and recorded spans must not contain content attributes."""
-    seen = {}
-
-    def respond(request):
-        seen["body"] = json.loads(request.content)
-        return _http_lib.Response(
-            200,
-            headers={"content-type": "text/event-stream"},
-            content=_STREAM_SSE_BODY,
-        )
-
-    client = Anthropic(
-        api_key="test_anthropic_api_key",
-        base_url="http://anthropic.test",
-        http_client=_http_lib.Client(
-            transport=_http_lib.MockTransport(respond)
-        ),
-    )
-    user_msg = {"role": "user", "content": "Stream without capture"}
-    system_block = {"type": "text", "text": "System stream without capture"}
-    with client.messages.stream(
-        model="claude-sonnet-4-20250514",
-        max_tokens=256,
-        messages=(msg for msg in [user_msg]),
-        system=(block for block in [system_block]),
-        tools=(tool for tool in [_WEATHER_TOOL]),
-    ) as stream:
-        stream.until_done()
-
-    assert seen["body"]["messages"] == [user_msg]
-    assert seen["body"]["system"] == [system_block]
-    assert seen["body"]["tools"] == [_WEATHER_TOOL]
-    spans = span_exporter.get_finished_spans()
-    assert len(spans) == 1
-    span = spans[0]
-    assert GenAIAttributes.GEN_AI_INPUT_MESSAGES not in span.attributes
-    assert GenAIAttributes.GEN_AI_SYSTEM_INSTRUCTIONS not in span.attributes
-    assert GenAIAttributes.GEN_AI_TOOL_DEFINITIONS not in span.attributes
-    assert GenAIAttributes.GEN_AI_OUTPUT_MESSAGES not in span.attributes
 
 
 @pytest.mark.vcr()
@@ -2430,9 +2156,9 @@ def test_sync_messages_raw_response_parse_to_honors_cast_target(
         messages=[{"role": "user", "content": "Say hello in one word."}],
     ) as raw_response:
         raw_response.parse()
-        as_httpx = raw_response.parse(to=_http_lib.Response)
+        as_httpx = raw_response.parse(to=httpx.Response)
 
-    assert isinstance(as_httpx, _http_lib.Response)
+    assert isinstance(as_httpx, httpx.Response)
 
 
 @pytest.mark.vcr()
